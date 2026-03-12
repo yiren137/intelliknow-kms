@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(source /Users/yirren/IdeaProjects/intelliknow-kms/.venv/bin/activate && pip install google-generativeai==0.8.3 -q && echo \"installed\")",
+      "Bash(source /Users/yirren/IdeaProjects/intelliknow-kms/.venv/bin/activate && python3 - <<'EOF'\nimport sys; sys.path.insert\\(0, '.'\\)\nfrom functools import lru_cache\n# Clear cache so new .env values are picked up\nfrom config import settings as s\ns.get_settings.cache_clear\\(\\)\n\nfrom core.classifier import classify_query\nresult = classify_query\\(\"How many vacation days do I get?\"\\)\nprint\\(\"Result:\", result\\)\nEOF)",
+      "Bash(source /Users/yirren/IdeaProjects/intelliknow-kms/.venv/bin/activate && python3 - <<'EOF'\nimport sys; sys.path.insert\\(0, '.'\\)\nfrom config.settings import get_settings\nget_settings.cache_clear\\(\\)\nfrom core.classifier import classify_query\nimport core.classifier as c; c._model = None  # reset singleton\n\nresult = classify_query\\(\"How many vacation days do I get?\"\\)\nprint\\(\"Classification:\", result\\)\nEOF)",
+      "Bash(source /Users/yirren/IdeaProjects/intelliknow-kms/.venv/bin/activate && python3 - <<'EOF'\nimport sys; sys.path.insert\\(0, '.'\\)\nfrom config.settings import get_settings\nget_settings.cache_clear\\(\\)\nimport core.classifier as c; c._model = None\nfrom core.classifier import classify_query\n\nresult = classify_query\\(\"How many vacation days do I get?\"\\)\nprint\\(\"Classification:\", result\\)\nEOF)",
+      "Bash(source /Users/yirren/IdeaProjects/intelliknow-kms/.venv/bin/activate && python -c \"import pytest, httpx; print\\('ok'\\)\" 2>&1)",
+      "Bash(source /Users/yirren/IdeaProjects/intelliknow-kms/.venv/bin/activate && pip install pytest pytest-asyncio httpx -q && echo \"installed\")",
+      "Bash(source .venv/bin/activate && python -m pytest tests/test_health.py tests/test_intent_spaces.py tests/test_analytics.py -v --tb=short 2>&1)",
+      "Bash(source /Users/yirren/IdeaProjects/intelliknow-kms/.venv/bin/activate && python3 -c \"\nimport docx2txt\ntext = docx2txt.process\\('/Users/yirren/IdeaProjects/intelliknow-kms/AD, Tech Lead, AKP.docx'\\)\nprint\\(text\\)\n\")",
+      "Bash(for f:*)",
+      "Bash(do echo:*)",
+      "Read(//Users/yirren/IdeaProjects/intelliknow-kms/**)",
+      "Bash(done)",
+      "Bash(source .venv/bin/activate && python -m pytest tests/test_health.py tests/test_intent_spaces.py tests/test_analytics.py tests/test_documents.py -v --tb=short 2>&1)",
+      "Bash(source /Users/yirren/IdeaProjects/intelliknow-kms/.venv/bin/activate && python -c \"from reportlab.pdfgen import canvas; print\\('reportlab ok'\\)\" 2>&1)",
+      "Bash(source /Users/yirren/IdeaProjects/intelliknow-kms/.venv/bin/activate && pip install reportlab -q && echo \"installed\")",
+      "Bash(source .venv/bin/activate && python -m pytest tests/test_documents.py -v --tb=short 2>&1)"
+    ]
+  }
+}

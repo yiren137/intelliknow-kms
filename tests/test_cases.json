@@ -1,0 +1,244 @@
+{
+  "classification": [
+    {
+      "id": "hr-01",
+      "query": "How many vacation days do I get?",
+      "expected_intent_space": "hr",
+      "keywords_in_answer": ["vacation", "days", "PTO"]
+    },
+    {
+      "id": "hr-02",
+      "query": "What is the parental leave policy?",
+      "expected_intent_space": "hr",
+      "keywords_in_answer": ["parental", "leave", "weeks"]
+    },
+    {
+      "id": "hr-03",
+      "query": "How does the performance review process work?",
+      "expected_intent_space": "hr",
+      "keywords_in_answer": ["review", "performance"]
+    },
+    {
+      "id": "hr-04",
+      "query": "What health insurance plans are available?",
+      "expected_intent_space": "hr",
+      "keywords_in_answer": ["medical", "health", "PPO", "HMO"]
+    },
+    {
+      "id": "hr-05",
+      "query": "Can I work from home?",
+      "expected_intent_space": "hr",
+      "keywords_in_answer": ["remote", "days"]
+    },
+    {
+      "id": "hr-06",
+      "query": "How many sick days am I entitled to?",
+      "expected_intent_space": "hr",
+      "keywords_in_answer": ["sick", "10", "days"]
+    },
+    {
+      "id": "hr-07",
+      "query": "What happens to unused PTO at the end of the year?",
+      "expected_intent_space": "hr",
+      "keywords_in_answer": ["carry", "unused"]
+    },
+    {
+      "id": "hr-08",
+      "query": "What is the notice period for resignation?",
+      "expected_intent_space": "hr",
+      "keywords_in_answer": ["notice", "weeks"]
+    },
+    {
+      "id": "legal-01",
+      "query": "What is the NDA policy?",
+      "expected_intent_space": "legal",
+      "keywords_in_answer": ["NDA", "non-disclosure", "confidential"]
+    },
+    {
+      "id": "legal-02",
+      "query": "Who owns the intellectual property I create at work?",
+      "expected_intent_space": "legal",
+      "keywords_in_answer": ["intellectual property", "Acme", "company"]
+    },
+    {
+      "id": "legal-03",
+      "query": "What are the GDPR data retention requirements?",
+      "expected_intent_space": "legal",
+      "keywords_in_answer": ["GDPR", "data", "retention"]
+    },
+    {
+      "id": "legal-04",
+      "query": "How do I get a contract reviewed?",
+      "expected_intent_space": "legal",
+      "keywords_in_answer": ["contract", "Legal", "review"]
+    },
+    {
+      "id": "legal-05",
+      "query": "What is the gift policy for vendors?",
+      "expected_intent_space": "legal",
+      "keywords_in_answer": ["gift", "bribery", "$50"]
+    },
+    {
+      "id": "finance-01",
+      "query": "What is the meal per diem rate for business travel?",
+      "expected_intent_space": "finance",
+      "keywords_in_answer": ["meal", "per diem", "$75"]
+    },
+    {
+      "id": "finance-02",
+      "query": "How do I submit an expense report?",
+      "expected_intent_space": "finance",
+      "keywords_in_answer": ["expense", "30 days", "Expense Portal"]
+    },
+    {
+      "id": "finance-03",
+      "query": "What class do I fly for international travel?",
+      "expected_intent_space": "finance",
+      "keywords_in_answer": ["economy", "business class", "6 hours"]
+    },
+    {
+      "id": "finance-04",
+      "query": "What is the company's total budget for this year?",
+      "expected_intent_space": "finance",
+      "keywords_in_answer": ["budget", "$48", "M"]
+    },
+    {
+      "id": "finance-05",
+      "query": "What is the approval limit for a manager to approve purchases?",
+      "expected_intent_space": "finance",
+      "keywords_in_answer": ["Manager", "$5,000"]
+    },
+    {
+      "id": "finance-06",
+      "query": "What is the corporate credit card limit for individual contributors?",
+      "expected_intent_space": "finance",
+      "keywords_in_answer": ["$2,000", "credit"]
+    },
+    {
+      "id": "general-01",
+      "query": "Where is the company headquartered?",
+      "expected_intent_space": "general",
+      "keywords_in_answer": ["San Francisco"]
+    },
+    {
+      "id": "general-02",
+      "query": "What are the company's core values?",
+      "expected_intent_space": "general",
+      "keywords_in_answer": ["Customer", "Transparent", "values"]
+    },
+    {
+      "id": "general-03",
+      "query": "What project management tools does the company use?",
+      "expected_intent_space": "general",
+      "keywords_in_answer": ["Jira", "Asana"]
+    },
+    {
+      "id": "general-04",
+      "query": "How much is the learning and development budget?",
+      "expected_intent_space": "general",
+      "keywords_in_answer": ["$1,500", "L&D"]
+    },
+    {
+      "id": "general-05",
+      "query": "When is the All-Hands meeting?",
+      "expected_intent_space": "general",
+      "keywords_in_answer": ["Thursday", "All-Hands"]
+    }
+  ],
+  "edge_cases": [
+    {
+      "id": "edge-01",
+      "description": "Ambiguous query should return a valid intent space",
+      "query": "What are the rules?",
+      "expected_status": "success",
+      "expected_intent_spaces": ["hr", "legal", "finance", "general"]
+    },
+    {
+      "id": "edge-02",
+      "description": "Query with no matching document content still returns gracefully",
+      "query": "What is the policy on adopting office pets?",
+      "expected_status": "success",
+      "expected_intent_spaces": ["hr", "general"]
+    },
+    {
+      "id": "edge-03",
+      "description": "Very specific numeric query",
+      "query": "What percentage does the company pay for employee medical premiums?",
+      "expected_intent_space": "hr",
+      "keywords_in_answer": ["80%"]
+    }
+  ],
+  "api": {
+    "health": {
+      "endpoint": "GET /health",
+      "expected_status_code": 200,
+      "expected_body": {"status": "ok"}
+    },
+    "query_validation": [
+      {
+        "id": "api-q-01",
+        "description": "Empty query should be rejected",
+        "body": {"query": ""},
+        "expected_status_code": 422
+      },
+      {
+        "id": "api-q-02",
+        "description": "Valid query returns full response schema",
+        "body": {"query": "What is the vacation policy?", "source": "test"},
+        "expected_status_code": 200,
+        "expected_fields": ["query", "intent_space", "confidence", "answer", "sources", "latency_ms", "status"]
+      }
+    ],
+    "documents": [
+      {
+        "id": "api-doc-01",
+        "description": "Upload unsupported file type should return 400",
+        "file": "dummy.txt",
+        "intent_space": "hr",
+        "expected_status_code": 400
+      },
+      {
+        "id": "api-doc-02",
+        "description": "Upload to non-existent intent space should return 404",
+        "file": "test_hr_handbook.docx",
+        "intent_space": "nonexistent",
+        "expected_status_code": 404
+      }
+    ],
+    "intent_spaces": [
+      {
+        "id": "api-is-01",
+        "description": "List intent spaces returns at least 4 default spaces",
+        "endpoint": "GET /api/v1/intent-spaces",
+        "expected_status_code": 200,
+        "expected_min_count": 4
+      },
+      {
+        "id": "api-is-02",
+        "description": "Create duplicate intent space returns 409",
+        "body": {"name": "hr", "display_name": "HR Duplicate", "description": "test"},
+        "expected_status_code": 409
+      },
+      {
+        "id": "api-is-03",
+        "description": "Delete general intent space should return 400",
+        "expected_status_code": 400
+      }
+    ],
+    "analytics": [
+      {
+        "id": "api-an-01",
+        "description": "Analytics summary returns correct schema",
+        "endpoint": "GET /api/v1/analytics/summary",
+        "expected_status_code": 200,
+        "expected_fields": ["total_queries", "successful_queries", "success_rate", "total_documents", "total_chunks", "avg_latency_ms"]
+      },
+      {
+        "id": "api-an-02",
+        "description": "Daily analytics accepts custom day range",
+        "endpoint": "GET /api/v1/analytics/daily?days=7",
+        "expected_status_code": 200
+      }
+    ]
+  }
+}
