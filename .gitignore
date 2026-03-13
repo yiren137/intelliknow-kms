@@ -39,3 +39,4 @@ logs/
 # Coverage
 .coverage
 htmlcov/
+.claude/
