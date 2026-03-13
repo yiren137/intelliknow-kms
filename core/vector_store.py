@@ -1,17 +1,22 @@
-"""FAISS IndexFlatIP per intent space with deletion support via metadata.pkl."""
+"""FAISS IndexFlatIP + BM25 hybrid search per intent space."""
 from __future__ import annotations
 import os
 import pickle
 from typing import Dict, List, Tuple
 import numpy as np
 import faiss
+from rank_bm25 import BM25Okapi
 from config.settings import get_settings
 
 settings = get_settings()
 
 
+def _tokenize(text: str) -> list[str]:
+    return text.lower().split()
+
+
 class VectorStore:
-    """One FAISS index per intent space.
+    """One FAISS index + BM25 index per intent space.
 
     Stores raw vectors alongside metadata so we can rebuild the index when
     documents are deleted (FAISS IndexFlatIP has no native remove()).
@@ -26,10 +31,11 @@ class VectorStore:
         self.meta_path = os.path.join(self.dir, "metadata.pkl")
 
         self.index: faiss.IndexFlatIP = faiss.IndexFlatIP(settings.embedding_dim)
-        # metadata entries: list of dicts, index == faiss_id
         self.metadata: List[Dict] = []
+        self._bm25: BM25Okapi | None = None
 
         self._load()
+        self._rebuild_bm25()
 
     # ------------------------------------------------------------------ #
     # Persistence                                                           #
@@ -40,11 +46,74 @@ class VectorStore:
             self.index = faiss.read_index(self.index_path)
             with open(self.meta_path, "rb") as f:
                 self.metadata = pickle.load(f)
+            self._reconcile()
+
+    def _reconcile(self):
+        """Remove FAISS entries whose chunk_id no longer exists in the DB.
+
+        Guards against DB/index drift that happens when the app is restarted
+        after a crash, a manual DB reset, or a failed delete operation.
+        """
+        from db.database import get_db_connection
+        import logging
+        log = logging.getLogger("intelliknow.vector_store")
+
+        if not self.metadata:
+            return
+
+        chunk_ids = [m["chunk_id"] for m in self.metadata if not m.get("deleted")]
+        if not chunk_ids:
+            return
+
+        with get_db_connection() as conn:
+            placeholders = ",".join("?" * len(chunk_ids))
+            rows = conn.execute(
+                f"SELECT id FROM chunks WHERE id IN ({placeholders})", chunk_ids
+            ).fetchall()
+        valid_ids = {r["id"] for r in rows}
+
+        stale = [m["chunk_id"] for m in self.metadata if not m.get("deleted") and m["chunk_id"] not in valid_ids]
+        if not stale:
+            return
+
+        log.warning(
+            "Reconciling vector store '%s': removing %d stale chunk(s) %s",
+            self.intent_space, len(stale), stale,
+        )
+        stale_set = set(stale)
+        for entry in self.metadata:
+            if entry["chunk_id"] in stale_set:
+                entry["deleted"] = True
+
+        active = [m for m in self.metadata if not m["deleted"]]
+        if active:
+            vectors = np.stack([m["vector"] for m in active]).astype(np.float32)
+            new_index = faiss.IndexFlatIP(settings.embedding_dim)
+            new_index.add(vectors)
+            for new_id, entry in enumerate(active):
+                entry["faiss_id"] = new_id
+            self.index = new_index
+            self.metadata = active
+        else:
+            self.index = faiss.IndexFlatIP(settings.embedding_dim)
+            self.metadata = []
+
+        self._save()
 
     def _save(self):
         faiss.write_index(self.index, self.index_path)
         with open(self.meta_path, "wb") as f:
             pickle.dump(self.metadata, f)
+
+    def _rebuild_bm25(self):
+        active_texts = [
+            _tokenize(m["chunk_text"])
+            for m in self.metadata
+            if not m.get("deleted")
+        ]
+        self._bm25 = BM25Okapi(active_texts) if active_texts else None
+        # Map active metadata to BM25 index positions
+        self._bm25_meta = [m for m in self.metadata if not m.get("deleted")]
 
     # ------------------------------------------------------------------ #
     # Write                                                                 #
@@ -75,6 +144,7 @@ class VectorStore:
             )
 
         self._save()
+        self._rebuild_bm25()
         return faiss_ids
 
     # ------------------------------------------------------------------ #
@@ -92,7 +162,6 @@ class VectorStore:
             vectors = np.stack([m["vector"] for m in active]).astype(np.float32)
             new_index = faiss.IndexFlatIP(settings.embedding_dim)
             new_index.add(vectors)
-            # Remap faiss_ids
             for new_id, entry in enumerate(active):
                 entry["faiss_id"] = new_id
             self.index = new_index
@@ -102,6 +171,7 @@ class VectorStore:
             self.metadata = []
 
         self._save()
+        self._rebuild_bm25()
 
     # ------------------------------------------------------------------ #
     # Search                                                                #
@@ -110,7 +180,7 @@ class VectorStore:
     def search(
         self, query_vector: np.ndarray, top_k: int = 5
     ) -> List[Tuple[float, Dict]]:
-        """Return list of (score, metadata_dict) sorted by descending score."""
+        """Pure vector search — returns (score, metadata) sorted by descending score."""
         if self.index.ntotal == 0:
             return []
 
@@ -125,6 +195,59 @@ class VectorStore:
             if meta.get("deleted"):
                 continue
             results.append((float(score), meta))
+
+        return results
+
+    def hybrid_search(
+        self, query_text: str, query_vector: np.ndarray, top_k: int = 5
+    ) -> List[Tuple[float, Dict]]:
+        """Hybrid BM25 + vector search merged with Reciprocal Rank Fusion."""
+        if self.index.ntotal == 0:
+            return []
+
+        candidate_k = min(top_k * 3, self.index.ntotal)
+
+        # --- Vector search ---
+        vec_results = self.search(query_vector, top_k=candidate_k)
+        vec_rank = {meta["chunk_id"]: rank for rank, (_, meta) in enumerate(vec_results)}
+
+        # --- BM25 search ---
+        bm25_rank: dict[int, int] = {}
+        if self._bm25 and self._bm25_meta:
+            tokens = _tokenize(query_text)
+            bm25_scores = self._bm25.get_scores(tokens)
+            top_bm25_idx = np.argsort(bm25_scores)[::-1][:candidate_k]
+            for rank, idx in enumerate(top_bm25_idx):
+                if idx < len(self._bm25_meta):
+                    cid = self._bm25_meta[idx]["chunk_id"]
+                    bm25_rank[cid] = rank
+
+        # --- Reciprocal Rank Fusion (k=60) ---
+        k_rrf = 60
+        all_chunk_ids = set(vec_rank) | set(bm25_rank)
+        rrf_scores: dict[int, float] = {}
+        for cid in all_chunk_ids:
+            score = 0.0
+            if cid in vec_rank:
+                score += 1.0 / (k_rrf + vec_rank[cid])
+            if cid in bm25_rank:
+                score += 1.0 / (k_rrf + bm25_rank[cid])
+            rrf_scores[cid] = score
+
+        # Build result list from vector search metadata (it has the full meta)
+        meta_by_cid = {meta["chunk_id"]: (score, meta) for score, meta in vec_results}
+        # Also include BM25-only results
+        for idx, meta in enumerate(self._bm25_meta or []):
+            cid = meta["chunk_id"]
+            if cid not in meta_by_cid:
+                meta_by_cid[cid] = (0.0, meta)
+
+        ranked = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+        results = []
+        for cid, rrf_score in ranked[:top_k]:
+            if cid in meta_by_cid:
+                orig_score, meta = meta_by_cid[cid]
+                results.append((orig_score, meta))
 
         return results
 

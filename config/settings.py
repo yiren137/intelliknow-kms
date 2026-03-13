@@ -34,13 +34,24 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # Embedding model (local, no API cost)
-    embedding_model: str = "all-MiniLM-L6-v2"
-    embedding_dim: int = 384
+    # NOTE: changing this requires rebuilding all FAISS indices (delete data/faiss_indices/)
+    embedding_model: str = "BAAI/bge-base-en-v1.5"
+    embedding_dim: int = 768
 
     # Chunking
     chunk_size: int = 512
     chunk_overlap: int = 64
     max_retrieval_chunks: int = 5
+
+    # Retrieval quality
+    min_retrieval_score: float = 0.2       # chunks below this score are ignored
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+    # Query result cache TTL in seconds (0 = disabled)
+    query_cache_ttl: int = 300
+
+    # Conversation history turns kept per user per bot
+    max_conversation_history: int = 5
 
 
 @lru_cache

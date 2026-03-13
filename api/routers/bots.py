@@ -12,7 +12,24 @@ def get_bots():
         rows = conn.execute(
             "SELECT id, platform, is_active, last_seen_at, created_at FROM bot_integrations"
         ).fetchall()
-    return [BotStatus(**dict(r)) for r in rows]
+
+    results = []
+    for r in rows:
+        bot = dict(r)
+        # Dynamically compute is_active: bot is considered active only if it
+        # sent a heartbeat within the last 2 minutes
+        if bot["last_seen_at"]:
+            with get_db_connection() as conn:
+                stale = conn.execute(
+                    "SELECT (strftime('%s','now') - strftime('%s', ?)) > 120 AS stale",
+                    (bot["last_seen_at"],),
+                ).fetchone()
+            bot["is_active"] = not stale["stale"]
+        else:
+            bot["is_active"] = False
+        results.append(BotStatus(**bot))
+
+    return results
 
 
 @router.put("/{platform}", response_model=BotStatus)

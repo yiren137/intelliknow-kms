@@ -14,7 +14,20 @@ from api.main import app
 @pytest.fixture(scope="session")
 def client():
     with TestClient(app) as c:
+        # Delete all documents at the start of each session so accumulated state
+        # from previous runs doesn't pollute vector search results.
+        docs = c.get("/api/v1/documents").json()
+        for doc in (docs if isinstance(docs, list) else docs.get("documents", [])):
+            c.delete(f"/api/v1/documents/{doc['id']}")
         yield c
+
+
+@pytest.fixture(autouse=True)
+def clear_query_cache():
+    """Clear the orchestrator query cache before each test to prevent stale cache hits."""
+    from core.orchestrator import clear_cache
+    clear_cache()
+    yield
 
 
 @pytest.fixture(scope="session")

@@ -5,7 +5,7 @@ import os
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile
 
 from api.schemas import ChunkOut, DocumentOut, DocumentUploadResponse, MessageResponse
 from config.settings import get_settings
@@ -63,8 +63,19 @@ def _index_document(doc_id: int, file_path: str, intent_space: str, space_id: in
 # Upload                                                               #
 # ------------------------------------------------------------------ #
 
+def _bg_index_document(doc_id: int, file_path: str, intent_space: str, space_id: int):
+    """Background task: index a document and update its status."""
+    try:
+        _index_document(doc_id, file_path, intent_space, space_id)
+    except Exception as e:
+        logger.exception("Background indexing failed for doc_id=%s", doc_id)
+        with get_db_connection() as conn:
+            conn.execute("UPDATE documents SET status = 'error' WHERE id = ?", (doc_id,))
+
+
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     intent_space: str = Form(...),
 ):
@@ -98,20 +109,16 @@ async def upload_document(
         )
         doc_id = cur.lastrowid
 
-    try:
-        chunk_count = _index_document(doc_id, file_path, intent_space, space_row["id"])
-        return DocumentUploadResponse(
-            id=doc_id,
-            original_name=file.filename or unique_name,
-            intent_space=intent_space,
-            chunk_count=chunk_count,
-            status="indexed",
-        )
-    except Exception as e:
-        logger.exception("Failed to process document '%s' (doc_id=%s)", file.filename, doc_id)
-        with get_db_connection() as conn:
-            conn.execute("UPDATE documents SET status = 'error' WHERE id = ?", (doc_id,))
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+    # Return immediately and index in the background
+    background_tasks.add_task(_bg_index_document, doc_id, file_path, intent_space, space_row["id"])
+
+    return DocumentUploadResponse(
+        id=doc_id,
+        original_name=file.filename or unique_name,
+        intent_space=intent_space,
+        chunk_count=0,
+        status="processing",
+    )
 
 
 # ------------------------------------------------------------------ #
@@ -211,6 +218,74 @@ def reparse_document(doc_id: int):
         with get_db_connection() as conn:
             conn.execute("UPDATE documents SET status = 'error' WHERE id = ?", (doc_id,))
         raise HTTPException(status_code=500, detail=f"Re-parse failed: {str(e)}")
+
+
+# ------------------------------------------------------------------ #
+# Replace (update document file in-place)                               #
+# ------------------------------------------------------------------ #
+
+@router.post("/{doc_id}/replace", response_model=DocumentUploadResponse)
+async def replace_document(doc_id: int, file: UploadFile = File(...)):
+    """Replace the file behind an existing document record and re-index it."""
+    with get_db_connection() as conn:
+        row = conn.execute(
+            """SELECT d.id, d.filename, d.original_name, d.file_type,
+                      i.name as intent_space_name, i.id as intent_space_id
+               FROM documents d JOIN intent_spaces i ON d.intent_space_id = i.id
+               WHERE d.id = ?""",
+            (doc_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
+
+    os.makedirs(settings.uploads_dir, exist_ok=True)
+    unique_name = f"{uuid.uuid4().hex}{ext}"
+    file_path = os.path.join(settings.uploads_dir, unique_name)
+    content = await file.read()
+    file_size = len(content)
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    logger.info(
+        "Replacing doc_id=%s ('%s') with new file '%s' (%d bytes)",
+        doc_id, row["original_name"], file.filename, file_size,
+    )
+
+    # Remove old vectors and chunks
+    store = get_vector_store(row["intent_space_name"])
+    store.remove_document_chunks(doc_id)
+    old_path = os.path.join(settings.uploads_dir, row["filename"])
+    if os.path.exists(old_path):
+        os.remove(old_path)
+
+    with get_db_connection() as conn:
+        conn.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
+        conn.execute(
+            """UPDATE documents
+               SET filename = ?, original_name = ?, file_type = ?,
+                   file_size_bytes = ?, status = 'processing', chunk_count = 0
+               WHERE id = ?""",
+            (unique_name, file.filename, ext.lstrip("."), file_size, doc_id),
+        )
+
+    try:
+        chunk_count = _index_document(doc_id, file_path, row["intent_space_name"], row["intent_space_id"])
+        return DocumentUploadResponse(
+            id=doc_id,
+            original_name=file.filename or unique_name,
+            intent_space=row["intent_space_name"],
+            chunk_count=chunk_count,
+            status="indexed",
+        )
+    except Exception as e:
+        logger.exception("Replace failed for doc_id=%s", doc_id)
+        with get_db_connection() as conn:
+            conn.execute("UPDATE documents SET status = 'error' WHERE id = ?", (doc_id,))
+        raise HTTPException(status_code=500, detail=f"Replace failed: {str(e)}")
 
 
 # ------------------------------------------------------------------ #

@@ -1,4 +1,4 @@
-"""Singleton wrapper around sentence-transformers all-MiniLM-L6-v2."""
+"""Singleton wrapper around the configured sentence-transformers model."""
 from __future__ import annotations
 from typing import List
 import numpy as np
@@ -25,5 +25,10 @@ def embed_texts(texts: List[str]) -> np.ndarray:
 
 
 def embed_query(text: str) -> np.ndarray:
-    """Return a single normalised query vector of shape (1, dim)."""
+    """Return a single normalised query vector of shape (1, dim).
+
+    BGE models benefit from a retrieval prefix on queries (not on documents).
+    """
+    if "bge" in settings.embedding_model.lower():
+        text = f"Represent this sentence for searching relevant passages: {text}"
     return embed_texts([text])

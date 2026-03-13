@@ -12,6 +12,7 @@ class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
     source: str = Field(default="api")
     user_id: Optional[str] = None
+    conversation_history: Optional[List[List[str]]] = None  # [[user_q, assistant_a], ...]
 
 
 class SourceDoc(BaseModel):
@@ -23,6 +24,7 @@ class SourceDoc(BaseModel):
 
 class QueryResponse(BaseModel):
     query: str
+    query_log_id: int
     intent_space: str
     intent_space_name: str
     confidence: float
@@ -122,7 +124,13 @@ class QueryLogEntry(BaseModel):
     confidence_score: Optional[float]
     response_status: str
     latency_ms: Optional[int]
+    cache_hit: bool = False
+    feedback: Optional[int]
     created_at: str
+
+
+class FeedbackRequest(BaseModel):
+    feedback: int = Field(..., description="1 for thumbs up, -1 for thumbs down")
 
 
 class DocumentAccessStat(BaseModel):

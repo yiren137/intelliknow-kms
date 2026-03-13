@@ -66,9 +66,13 @@ def test_update_intent_space(client):
     assert resp.status_code == 200
     assert resp.json()["description"] == "Updated general description"
 
-    # Restore original
+    # Restore canonical description (must match the value set by db/_migrate)
     client.put(f"/api/v1/intent-spaces/{space_id}", json={
-        "description": "General company knowledge, announcements, miscellaneous docs"
+        "description": (
+            "General company knowledge, company values, culture, announcements, "
+            "miscellaneous policies, tools, all-hands, learning and development L&D, "
+            "headquarters, company handbook"
+        )
     })
 
 

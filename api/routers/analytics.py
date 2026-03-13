@@ -54,7 +54,7 @@ def analytics_queries(
 ):
     with get_db_connection() as conn:
         sql = """SELECT id, query_text, source, user_id, intent_space_name,
-                        confidence_score, response_status, latency_ms, created_at
+                        confidence_score, response_status, latency_ms, cache_hit, feedback, created_at
                  FROM query_logs WHERE 1=1"""
         params: list = []
         if source:
@@ -82,6 +82,80 @@ def analytics_documents():
         ).fetchall()
 
     return [DocumentAccessStat(**dict(r)) for r in rows]
+
+
+@router.get("/feedback-summary")
+def analytics_feedback_summary():
+    with get_db_connection() as conn:
+        row = conn.execute(
+            """SELECT
+                COUNT(CASE WHEN feedback = 1  THEN 1 END) as thumbs_up,
+                COUNT(CASE WHEN feedback = -1 THEN 1 END) as thumbs_down,
+                COUNT(CASE WHEN feedback IS NOT NULL THEN 1 END) as total_with_feedback
+               FROM query_logs"""
+        ).fetchone()
+    total = row["total_with_feedback"] or 0
+    up = row["thumbs_up"] or 0
+    down = row["thumbs_down"] or 0
+    return {
+        "thumbs_up": up,
+        "thumbs_down": down,
+        "total_with_feedback": total,
+        "positive_rate": round(up / total, 4) if total else None,
+    }
+
+
+@router.get("/cache-stats")
+def analytics_cache_stats(days: int = Query(default=30, le=365)):
+    """Return overall and daily cache hit rate for the given period."""
+    with get_db_connection() as conn:
+        overall = conn.execute(
+            """SELECT
+                COUNT(*) as total,
+                SUM(cache_hit) as hits
+               FROM query_logs
+               WHERE created_at >= date('now', ? || ' days')""",
+            (f"-{days}",),
+        ).fetchone()
+
+        daily = conn.execute(
+            """SELECT date(created_at) as date,
+                      COUNT(*) as total,
+                      SUM(cache_hit) as hits
+               FROM query_logs
+               WHERE created_at >= date('now', ? || ' days')
+               GROUP BY date(created_at)
+               ORDER BY date""",
+            (f"-{days}",),
+        ).fetchall()
+
+    total = overall["total"] or 0
+    hits = overall["hits"] or 0
+    return {
+        "total_queries": total,
+        "cache_hits": hits,
+        "cache_misses": total - hits,
+        "cache_hit_rate": round(hits / total, 4) if total else 0.0,
+        "daily": [
+            {
+                "date": r["date"],
+                "total": r["total"],
+                "hits": r["hits"] or 0,
+                "hit_rate": round((r["hits"] or 0) / r["total"], 4) if r["total"] else 0.0,
+            }
+            for r in daily
+        ],
+    }
+
+
+@router.delete("/queries")
+def clear_query_logs():
+    """Delete all query log entries and associated document access logs."""
+    with get_db_connection() as conn:
+        conn.execute("DELETE FROM document_access_log")
+        result = conn.execute("DELETE FROM query_logs")
+        deleted = result.rowcount
+    return {"deleted": deleted, "message": f"Cleared {deleted} query log entries."}
 
 
 @router.get("/daily", response_model=list[DailyVolume])

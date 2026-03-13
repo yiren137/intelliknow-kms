@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from db.database import init_db
-from api.routers import health, query, documents, intent_spaces, analytics, bots
+from api.routers import health, query, documents, intent_spaces, analytics, bots, feedback
 
 # ── Logging setup ──────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -61,6 +61,7 @@ app.include_router(documents.router)
 app.include_router(intent_spaces.router)
 app.include_router(analytics.router)
 app.include_router(bots.router)
+app.include_router(feedback.router)
 
 
 @app.get("/")

@@ -39,6 +39,70 @@ def _migrate(conn):
     if "file_size_bytes" not in existing:
         conn.execute("ALTER TABLE documents ADD COLUMN file_size_bytes INTEGER DEFAULT 0")
 
+    # query_logs: feedback (1=thumbs up, -1=thumbs down, NULL=no feedback)
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(query_logs)")}
+    if "feedback" not in existing:
+        conn.execute("ALTER TABLE query_logs ADD COLUMN feedback INTEGER")
+    if "cache_hit" not in existing:
+        conn.execute("ALTER TABLE query_logs ADD COLUMN cache_hit INTEGER NOT NULL DEFAULT 0")
+
+    # With temperature=10 softmax scaling, clear routing decisions score 0.4–0.9+.
+    # 0.30 rejects genuinely ambiguous queries while remaining reachable for
+    # moderately confident classifications (borderline queries score ~0.30–0.40).
+    conn.execute(
+        """UPDATE intent_spaces SET confidence_threshold = 0.30
+           WHERE name IN ('hr', 'legal', 'finance', 'general')"""
+    )
+
+    # Enrich intent-space descriptions/keywords so the embedding classifier can
+    # distinguish closely-related queries (e.g. finance-travel vs general-travel).
+    keyword_updates = {
+        "hr": (
+            "HR policies, employee handbook, onboarding, offboarding, employee benefits, "
+            "health benefits, health insurance, medical dental vision coverage, "
+            "leave, vacation, sick days, parental leave, "
+            "performance review process, annual performance review, review cycle, "
+            "performance appraisal, employee evaluation, goal setting, performance assessment, "
+            "severance, remote work, employee guidelines",
+            "vacation leave sick parental onboarding offboarding benefits health benefits "
+            "health insurance medical dental vision coverage performance review "
+            "performance review process annual review review cycle "
+            "performance appraisal employee evaluation goal setting performance assessment "
+            "severance remote work PTO termination employee",
+        ),
+        "legal": (
+            "Legal documents, contracts, compliance, NDA, non-disclosure, "
+            "intellectual property, GDPR, data privacy, anti-bribery, regulatory, "
+            "submit contract, contract submission, legal review, contract approval",
+            "NDA contract compliance GDPR intellectual property bribery regulatory "
+            "legal privacy data protection submit contract contract submission "
+            "legal review contract approval sign agreement",
+        ),
+        "finance": (
+            "Financial policies, expense reimbursement, annual corporate budget, "
+            "budget approval, travel expenses, corporate credit card, per diem, "
+            "meal allowance, procurement, invoice, accounts payable, spending limit, "
+            "financial reports, cost centre, "
+            "book business travel, travel booking, book flights, business trip",
+            "expense reimbursement annual corporate budget travel credit card per diem "
+            "meal allowance procurement invoice accounts payable financial approval "
+            "spending limit reimbursed book business travel travel booking "
+            "book flights business trip concur",
+        ),
+        "general": (
+            "General company knowledge, company values, culture, announcements, "
+            "miscellaneous policies, tools, all-hands, learning and development L&D, "
+            "headquarters, company handbook",
+            "company values culture announcements tools all-hands learning development "
+            "L&D budget handbook general policies headquarters",
+        ),
+    }
+    for name, (desc, kw) in keyword_updates.items():
+        conn.execute(
+            "UPDATE intent_spaces SET description = ?, keywords = ? WHERE name = ?",
+            (desc, kw, name),
+        )
+
 
 def init_db():
     with get_db_connection() as conn:
@@ -92,6 +156,7 @@ def init_db():
                 response_text TEXT,
                 latency_ms INTEGER,
                 documents_accessed TEXT DEFAULT '[]',
+                cache_hit INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (intent_space_id) REFERENCES intent_spaces(id) ON DELETE SET NULL
             );
@@ -118,17 +183,59 @@ def init_db():
         _migrate(conn)
 
         # Seed intent spaces
+        # confidence_threshold of 0.30 suits the temperature-scaled (T=10) softmax classifier:
+        # clear routing decisions score 0.4–0.9+; 0.30 rejects genuinely ambiguous queries.
         seeds = [
-            ("hr", "Human Resources", "HR policies, onboarding, benefits, and employee guidelines"),
-            ("legal", "Legal", "Legal documents, contracts, compliance policies"),
-            ("finance", "Finance", "Financial reports, budgets, expense policies"),
-            ("general", "General", "General company knowledge, announcements, miscellaneous docs"),
+            (
+                "hr", "Human Resources",
+                "HR policies, employee handbook, onboarding, offboarding, employee benefits, "
+                "health benefits, health insurance, medical dental vision coverage, "
+                "leave, vacation, sick days, parental leave, "
+                "performance review process, annual performance review, review cycle, "
+                "performance appraisal, employee evaluation, goal setting, performance assessment, "
+                "severance, remote work, employee guidelines",
+                "vacation leave sick parental onboarding offboarding benefits health benefits "
+                "health insurance medical dental vision coverage performance review "
+                "performance review process annual review review cycle "
+                "performance appraisal employee evaluation goal setting performance assessment "
+                "severance remote work PTO termination employee",
+            ),
+            (
+                "legal", "Legal",
+                "Legal documents, contracts, compliance, NDA, non-disclosure, "
+                "intellectual property, GDPR, data privacy, anti-bribery, regulatory, "
+                "submit contract, contract submission, legal review, contract approval",
+                "NDA contract compliance GDPR intellectual property bribery regulatory "
+                "legal privacy data protection submit contract contract submission "
+                "legal review contract approval sign agreement",
+            ),
+            (
+                "finance", "Finance",
+                "Financial policies, expense reimbursement, annual corporate budget, "
+                "budget approval, travel expenses, corporate credit card, per diem, "
+                "meal allowance, procurement, invoice, accounts payable, spending limit, "
+                "financial reports, cost centre, "
+                "book business travel, travel booking, book flights, business trip",
+                "expense reimbursement annual corporate budget travel credit card per diem "
+                "meal allowance procurement invoice accounts payable financial approval "
+                "spending limit reimbursed book business travel travel booking "
+                "book flights business trip concur",
+            ),
+            (
+                "general", "General",
+                "General company knowledge, company values, culture, announcements, "
+                "miscellaneous policies, tools, all-hands, learning and development L&D, "
+                "headquarters, company handbook",
+                "company values culture announcements tools all-hands learning development "
+                "L&D budget handbook general policies headquarters",
+            ),
         ]
-        for name, display_name, description in seeds:
+        for name, display_name, description, keywords in seeds:
             conn.execute(
-                """INSERT OR IGNORE INTO intent_spaces (name, display_name, description)
-                   VALUES (?, ?, ?)""",
-                (name, display_name, description),
+                """INSERT OR IGNORE INTO intent_spaces
+                       (name, display_name, description, keywords, confidence_threshold)
+                   VALUES (?, ?, ?, ?, 0.30)""",
+                (name, display_name, description, keywords),
             )
 
         # Seed bot integrations

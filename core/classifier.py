@@ -1,20 +1,13 @@
-"""Use Gemini to classify a query into an intent space."""
+"""Classify queries into intent spaces using embedding similarity (no API call)."""
 from __future__ import annotations
-import json
-import google.generativeai as genai
-from config.settings import get_settings
+import numpy as np
 from db.database import get_db_connection
-
-settings = get_settings()
-_model = None
+from core.embedder import embed_texts
 
 
-def _get_model():
-    global _model
-    if _model is None:
-        genai.configure(api_key=settings.gemini_api_key)
-        _model = genai.GenerativeModel(settings.gemini_model)
-    return _model
+# Cache intent space embeddings so they are only computed once
+_space_embeddings: dict[str, np.ndarray] = {}
+_space_cache_key: str = ""  # hash of space names to detect changes
 
 
 def _get_active_intent_spaces() -> list[dict]:
@@ -26,56 +19,64 @@ def _get_active_intent_spaces() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def classify_query(query: str) -> dict:
-    """Return {intent_space, confidence, reasoning}.
+def _get_space_embeddings(spaces: list[dict]) -> dict[str, np.ndarray]:
+    """Return cached per-space embeddings, rebuilding if spaces changed."""
+    global _space_embeddings, _space_cache_key
 
-    Falls back to 'general' if Gemini is unavailable or API key missing.
+    cache_key = ",".join(s["name"] for s in spaces)
+    if cache_key == _space_cache_key and _space_embeddings:
+        return _space_embeddings
+
+    texts = []
+    names = []
+    for s in spaces:
+        # Combine description and keywords for a richer representation
+        text = s["description"]
+        if s.get("keywords", "").strip():
+            text += ". Keywords: " + s["keywords"]
+        texts.append(text)
+        names.append(s["name"])
+
+    vecs = embed_texts(texts)  # shape (N, dim), already normalised
+    _space_embeddings = {name: vecs[i] for i, name in enumerate(names)}
+    _space_cache_key = cache_key
+    return _space_embeddings
+
+
+def classify_query(query: str, query_vector: np.ndarray | None = None) -> dict:
+    """Return {intent_space, confidence, reasoning} using local embedding similarity.
+
+    Pass query_vector if already computed to avoid re-embedding.
     """
-    if not settings.gemini_api_key:
-        return {"intent_space": "general", "confidence": 0.5, "reasoning": "No API key configured"}
-
     spaces = _get_active_intent_spaces()
     if not spaces:
         return {"intent_space": "general", "confidence": 0.5, "reasoning": "No intent spaces configured"}
 
-    spaces_desc_parts = []
-    for s in spaces:
-        line = f"- {s['name']}: {s['display_name']} — {s['description']}"
-        if s.get("keywords", "").strip():
-            line += f" (keywords: {s['keywords']})"
-        spaces_desc_parts.append(line)
-    spaces_desc = "\n".join(spaces_desc_parts)
+    if query_vector is None:
+        from core.embedder import embed_query
+        query_vector = embed_query(query)
 
-    prompt = f"""You are a query classifier for a knowledge management system.
-Given a user query, classify it into exactly one of the following intent spaces:
+    q_flat = query_vector.flatten()
+    space_embs = _get_space_embeddings(spaces)
 
-{spaces_desc}
+    # Cosine similarities (vectors are L2-normalised → dot product = cosine)
+    raw_scores = np.array([float(np.dot(q_flat, space_embs[s["name"]])) for s in spaces])
 
-Respond ONLY with valid JSON in this exact format:
-{{
-  "intent_space": "<one of the space names above>",
-  "confidence": <float 0.0-1.0>,
-  "reasoning": "<one sentence explanation>"
-}}
+    # Softmax with temperature scaling to sharpen the distribution.
+    # Raw cosine similarities cluster in a narrow range (e.g. 0.75–0.85),
+    # making plain softmax output near-uniform (~1/N per space).
+    # Multiplying by temperature amplifies differences before exponentiation.
+    temperature = 10.0
+    exp_scores = np.exp((raw_scores - raw_scores.max()) * temperature)
+    probs = exp_scores / exp_scores.sum()
 
-User query: {query}"""
+    best_idx = int(np.argmax(probs))
+    best_space = spaces[best_idx]["name"]
+    confidence = float(probs[best_idx])
+    cosine_sim = float(raw_scores[best_idx])
 
-    try:
-        model = _get_model()
-        response = model.generate_content(prompt)
-        content = response.text.strip()
-        if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-        result = json.loads(content)
-        valid_names = {s["name"] for s in spaces}
-        if result.get("intent_space") not in valid_names:
-            result["intent_space"] = "general"
-        return result
-    except Exception as e:
-        return {
-            "intent_space": "general",
-            "confidence": 0.3,
-            "reasoning": f"Classification failed: {str(e)[:100]}",
-        }
+    return {
+        "intent_space": best_space,
+        "confidence": confidence,
+        "reasoning": f"Embedding similarity {cosine_sim:.3f} (confidence {confidence:.2f})",
+    }

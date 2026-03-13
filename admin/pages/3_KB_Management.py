@@ -4,7 +4,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import streamlit as st
 import httpx
-import pandas as pd
 from config.settings import get_settings
 
 settings = get_settings()
@@ -13,6 +12,16 @@ BASE = settings.api_base_url
 st.set_page_config(page_title="KB Management | IntelliKnow", page_icon="📚", layout="wide")
 st.title("📚 Knowledge Base Management")
 
+# ── Column proportions for the document table ─────────────────────────────
+_COLS = [3.2, 1.4, 0.7, 0.8, 0.7, 0.9, 0.55, 0.65, 0.55]
+_HEADERS = ["Document", "Space", "Type", "Size", "Chunks", "Status", "View", "Update", "Delete"]
+
+# ── Session state ─────────────────────────────────────────────────────────
+if "action_message" not in st.session_state:
+    st.session_state.action_message = None   # (level, text) shown after a rerun
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────
 
 def get_intent_spaces():
     try:
@@ -41,16 +50,122 @@ def get_documents(intent_space=None, search=None):
 def fmt_size(size_bytes: int) -> str:
     if size_bytes < 1024:
         return f"{size_bytes} B"
-    elif size_bytes < 1024 ** 2:
+    if size_bytes < 1024 ** 2:
         return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes / 1024 ** 2:.1f} MB"
+
+
+def status_badge(status: str) -> str:
+    colours = {"indexed": "🟢", "processing": "🟡", "error": "🔴", "pending": "⚪"}
+    return f"{colours.get(status, '⚪')} {status}"
+
+
+# ── Dialogs ───────────────────────────────────────────────────────────────
+# Dialogs are called directly inside button handlers — this ensures they are
+# tied to a button click (which resets each rerun) rather than persistent
+# session state, preventing them from re-opening after tab navigation.
+
+@st.dialog("📄 Document Chunks", width="large")
+def view_chunks_dialog(doc: dict):
+    st.markdown(f"**{doc['original_name']}** · `{doc['intent_space_name']}` · {fmt_size(doc['file_size_bytes'])}")
+    st.divider()
+    try:
+        r = httpx.get(f"{BASE}/api/v1/documents/{doc['id']}/chunks", timeout=15)
+        r.raise_for_status()
+        chunks = r.json()
+        st.caption(f"{len(chunks)} chunks indexed")
+        for c in chunks:
+            pg = f" — page {c['page_number']}" if c.get("page_number") is not None else ""
+            with st.expander(f"Chunk {c['chunk_index']}{pg}", expanded=False):
+                st.text(c["chunk_text"])
+    except Exception as e:
+        st.error(f"Failed to load chunks: {e}")
+    if st.button("Close", use_container_width=True):
+        st.rerun()
+
+
+@st.dialog("⚠️ Confirm Delete")
+def delete_confirm_dialog(doc: dict):
+    st.warning(
+        f"Are you sure you want to permanently delete **{doc['original_name']}**?\n\n"
+        f"This will remove the document and all **{doc['chunk_count']} indexed chunks** "
+        f"from the `{doc['intent_space_name']}` knowledge base."
+    )
+    col_cancel, col_confirm = st.columns(2)
+    with col_cancel:
+        if st.button("Cancel", use_container_width=True):
+            st.rerun()
+    with col_confirm:
+        if st.button("Yes, Delete", type="primary", use_container_width=True):
+            try:
+                r = httpx.delete(f"{BASE}/api/v1/documents/{doc['id']}", timeout=30)
+                r.raise_for_status()
+                st.session_state.action_message = ("success", f"✅ '{doc['original_name']}' deleted successfully.")
+            except Exception as e:
+                st.error(f"Delete failed: {e}")
+                return
+            st.rerun()
+
+
+@st.dialog("🔄 Replace Document")
+def update_document_dialog(doc: dict):
+    st.markdown(
+        f"**Current file:** {doc['original_name']}  \n"
+        f"Space: `{doc['intent_space_name']}` · {fmt_size(doc['file_size_bytes'])} · "
+        f"{doc['chunk_count']} chunks"
+    )
+    st.divider()
+    st.caption(
+        "Upload a new file to replace the existing document. "
+        "The old file and all its chunks will be removed and re-indexed with the new file."
+    )
+    new_file = st.file_uploader(
+        "Choose a replacement PDF or DOCX file",
+        type=["pdf", "docx", "doc"],
+        key="replace_file_uploader",
+    )
+    col_cancel, col_confirm = st.columns(2)
+    with col_cancel:
+        if st.button("Cancel", use_container_width=True):
+            st.rerun()
+    with col_confirm:
+        if st.button("Replace & Re-index", type="primary", disabled=new_file is None, use_container_width=True):
+            with st.spinner("Replacing and re-indexing…"):
+                try:
+                    files = {"file": (new_file.name, new_file.getvalue(), new_file.type)}
+                    r = httpx.post(
+                        f"{BASE}/api/v1/documents/{doc['id']}/replace",
+                        files=files,
+                        timeout=120,
+                    )
+                    r.raise_for_status()
+                    result = r.json()
+                    st.session_state.action_message = (
+                        "success",
+                        f"✅ '{result['original_name']}' replaced — {result['chunk_count']} chunks re-indexed.",
+                    )
+                except httpx.HTTPStatusError as e:
+                    st.error(f"Replace failed: {e.response.text}")
+                    return
+                except Exception as e:
+                    st.error(f"Replace failed: {e}")
+                    return
+            st.rerun()
+
+
+# ── Post-action message ───────────────────────────────────────────────────
+if st.session_state.action_message:
+    level, text = st.session_state.action_message
+    st.session_state.action_message = None
+    if level == "success":
+        st.success(text)
     else:
-        return f"{size_bytes / 1024 ** 2:.1f} MB"
+        st.error(text)
 
-
+# ── Upload form ───────────────────────────────────────────────────────────
 spaces = get_intent_spaces()
 space_names = [s["name"] for s in spaces if s.get("is_active")]
 
-# ── Upload ────────────────────────────────────────────────────────────────
 st.subheader("Upload Document")
 with st.form("upload_form"):
     col1, col2 = st.columns([2, 1])
@@ -61,15 +176,20 @@ with st.form("upload_form"):
     submit_upload = st.form_submit_button("Upload & Index")
 
 if submit_upload and uploaded_file:
-    with st.spinner("Uploading and indexing..."):
+    with st.spinner("Uploading and indexing…"):
         try:
             files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-            data = {"intent_space": selected_space}
-            r = httpx.post(f"{BASE}/api/v1/documents/upload", files=files, data=data, timeout=120)
+            r = httpx.post(
+                f"{BASE}/api/v1/documents/upload",
+                files=files,
+                data={"intent_space": selected_space},
+                timeout=120,
+            )
             r.raise_for_status()
             result = r.json()
             st.success(
-                f"✅ Uploaded '{result['original_name']}' → {result['chunk_count']} chunks indexed in '{result['intent_space']}'"
+                f"✅ Uploaded '{result['original_name']}' → {result['chunk_count']} chunks indexed "
+                f"in '{result['intent_space']}'"
             )
         except httpx.HTTPStatusError as e:
             st.error(f"Upload failed: {e.response.text}")
@@ -87,66 +207,44 @@ with col1:
 with col2:
     filter_space = st.selectbox("Filter by intent space", ["All"] + space_names, key="filter")
 
-space_filter = None if filter_space == "All" else filter_space
-search_filter = search_query.strip() if search_query.strip() else None
-
-docs = get_documents(space_filter, search_filter)
+docs = get_documents(
+    intent_space=None if filter_space == "All" else filter_space,
+    search=search_query.strip() or None,
+)
 
 if not docs:
     st.info("No documents found. Use the form above to upload PDF or DOCX files.")
 else:
-    # Summary table (read-only)
-    df = pd.DataFrame(docs)
-    df["size"] = df["file_size_bytes"].apply(fmt_size)
-    display_cols = ["id", "original_name", "intent_space_name", "file_type", "size", "chunk_count", "status", "uploaded_at"]
-    display_cols = [c for c in display_cols if c in df.columns or c == "size"]
-    st.dataframe(df[display_cols], use_container_width=True, hide_index=True)
+    # ── Table header ──────────────────────────────────────────────────
+    header_cols = st.columns(_COLS)
+    for col, label in zip(header_cols, _HEADERS):
+        col.markdown(f"**{label}**")
+    st.divider()
 
-    st.markdown("---")
-
-    # ── Inline actions per document ───────────────────────────────────────
+    # ── Document rows ─────────────────────────────────────────────────
     for doc in docs:
         doc_id = doc["id"]
-        label = f"**{doc['original_name']}**  `{doc['intent_space_name']}` · {fmt_size(doc['file_size_bytes'])} · {doc['chunk_count']} chunks · _{doc['status']}_"
+        row = st.columns(_COLS)
 
-        with st.expander(label):
-            col_view, col_reparse, col_delete = st.columns(3)
+        row[0].markdown(f"**{doc['original_name']}**", help=doc["original_name"])
+        row[1].markdown(f"`{doc['intent_space_name']}`")
+        row[2].markdown(doc.get("file_type", "—").upper())
+        row[3].markdown(fmt_size(doc.get("file_size_bytes", 0)))
+        row[4].markdown(str(doc.get("chunk_count", 0)))
+        row[5].markdown(status_badge(doc.get("status", "unknown")))
 
-            with col_view:
-                if st.button("🔍 View Chunks", key=f"view_{doc_id}", use_container_width=True):
-                    try:
-                        r = httpx.get(f"{BASE}/api/v1/documents/{doc_id}/chunks", timeout=15)
-                        r.raise_for_status()
-                        chunks = r.json()
-                        st.markdown(f"**{len(chunks)} chunks indexed**")
-                        for c in chunks:
-                            pg = f" — page {c['page_number']}" if c.get("page_number") is not None else ""
-                            st.markdown(f"*Chunk {c['chunk_index']}{pg}*")
-                            st.text(c["chunk_text"][:500] + ("..." if len(c["chunk_text"]) > 500 else ""))
-                            st.divider()
-                    except Exception as e:
-                        st.error(f"Failed to load chunks: {e}")
+        # Buttons call dialogs directly — no session state needed for dialog
+        # triggering, so closing via the X button leaves no stale state.
+        with row[6]:
+            if st.button("👁", key=f"view_{doc_id}", help="View chunks", use_container_width=True):
+                view_chunks_dialog(doc)
 
-            with col_reparse:
-                if st.button("🔄 Re-parse", key=f"reparse_{doc_id}", use_container_width=True):
-                    with st.spinner("Re-parsing..."):
-                        try:
-                            r = httpx.post(f"{BASE}/api/v1/documents/{doc_id}/reparse", timeout=120)
-                            r.raise_for_status()
-                            result = r.json()
-                            st.success(f"✅ {result['chunk_count']} chunks re-indexed")
-                            st.rerun()
-                        except httpx.HTTPStatusError as e:
-                            st.error(f"Re-parse failed: {e.response.text}")
-                        except Exception as e:
-                            st.error(f"Re-parse failed: {e}")
+        with row[7]:
+            if st.button("↑", key=f"update_{doc_id}", help="Replace document", use_container_width=True):
+                update_document_dialog(doc)
 
-            with col_delete:
-                if st.button("🗑 Delete", key=f"delete_{doc_id}", type="secondary", use_container_width=True):
-                    try:
-                        r = httpx.delete(f"{BASE}/api/v1/documents/{doc_id}", timeout=30)
-                        r.raise_for_status()
-                        st.success(r.json()["message"])
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Delete failed: {e}")
+        with row[8]:
+            if st.button("🗑", key=f"delete_{doc_id}", help="Delete document", use_container_width=True):
+                delete_confirm_dialog(doc)
+
+        st.divider()

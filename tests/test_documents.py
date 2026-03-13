@@ -1,7 +1,18 @@
 """Tests for document upload, listing, and deletion."""
-import io
 import os
+import time
 import pytest
+
+
+def _wait_for_indexed(client, doc_id: int, timeout: int = 30) -> dict:
+    """Poll until a document reaches 'indexed' status, then return it."""
+    for _ in range(timeout):
+        docs = client.get("/api/v1/documents").json()
+        matching = [d for d in docs if d["id"] == doc_id]
+        if matching and matching[0]["status"] == "indexed":
+            return matching[0]
+        time.sleep(1)
+    pytest.fail(f"Document {doc_id} did not reach 'indexed' status within {timeout}s")
 
 
 def test_list_documents(client):
@@ -57,9 +68,12 @@ def test_upload_hr_document(client, hr_doc_path):
         )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["status"] == "indexed"
-    assert body["chunk_count"] > 0
+    # Upload returns immediately; status may be 'processing' or already 'indexed'
+    assert body["status"] in ("indexed", "processing")
     assert body["intent_space"] == "hr"
+
+    doc = _wait_for_indexed(client, body["id"])
+    assert doc["chunk_count"] > 0
 
 
 def test_upload_legal_document(client, legal_doc_path):
@@ -73,7 +87,9 @@ def test_upload_legal_document(client, legal_doc_path):
             data={"intent_space": "legal"},
         )
     assert resp.status_code == 200
-    assert resp.json()["status"] == "indexed"
+    body = resp.json()
+    assert body["status"] in ("indexed", "processing")
+    _wait_for_indexed(client, body["id"])
 
 
 def test_upload_finance_document(client, finance_doc_path):
@@ -87,7 +103,9 @@ def test_upload_finance_document(client, finance_doc_path):
             data={"intent_space": "finance"},
         )
     assert resp.status_code == 200
-    assert resp.json()["status"] == "indexed"
+    body = resp.json()
+    assert body["status"] in ("indexed", "processing")
+    _wait_for_indexed(client, body["id"])
 
 
 def test_upload_general_document(client, general_doc_path):
@@ -101,7 +119,9 @@ def test_upload_general_document(client, general_doc_path):
             data={"intent_space": "general"},
         )
     assert resp.status_code == 200
-    assert resp.json()["status"] == "indexed"
+    body = resp.json()
+    assert body["status"] in ("indexed", "processing")
+    _wait_for_indexed(client, body["id"])
 
 
 def test_delete_nonexistent_document_returns_404(client):
@@ -121,6 +141,9 @@ def test_upload_and_delete_document(client, hr_doc_path):
         )
     assert upload.status_code == 200
     doc_id = upload.json()["id"]
+
+    # Wait for indexing before deleting
+    _wait_for_indexed(client, doc_id)
 
     delete = client.delete(f"/api/v1/documents/{doc_id}")
     assert delete.status_code == 200

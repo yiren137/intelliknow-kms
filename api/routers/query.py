@@ -12,10 +12,12 @@ logger = logging.getLogger("intelliknow.query")
 def query_endpoint(request: QueryRequest):
     logger.info("Query received: '%s' (source=%s)", request.query, request.source)
     try:
+        history = [tuple(pair) for pair in request.conversation_history] if request.conversation_history else None
         result = run_query(
             query=request.query,
             source=request.source,
             user_id=request.user_id,
+            conversation_history=history,
         )
         logger.info("Query resolved to intent_space=%s", result.get("intent_space"))
         return QueryResponse(**result)
